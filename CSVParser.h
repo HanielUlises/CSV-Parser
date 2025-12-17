@@ -8,6 +8,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <map>
+#include <unordered_map>
 #include <functional>
 #include <algorithm>
 #include <numeric>
@@ -18,33 +19,59 @@ class CSVParser {
 private:
     std::vector<std::string> columns;
     std::vector<std::vector<std::string>> data;
-    std::map<std::string, size_t> column_indices;
+    std::unordered_map<std::string, size_t> column_indices;
 
 public:
     CSVParser() {}
 
     // Static method to read and parse a CSV file into a DataFrame-like structure
-    static CSVParser read_csv(const std::string& filename, char delimiter = ',', bool hasHeader = true) {
-        std::ifstream file{filename};
-        if (!file.is_open()) {
-            throw std::runtime_error("Could not open the file " + filename);
+    static CSVParser read_csv(const std::string& filename,
+                          char delimiter = ',',
+                          bool has_header = true) {
+        std::ifstream file(filename);
+        if (!file) {
+            throw std::runtime_error("Could not open file: " + filename);
         }
 
-        std::string line;
         std::vector<std::string> columns;
         std::vector<std::vector<std::string>> data;
+        size_t expected_columns = 0;
 
-        // Retrieving the header of the CSV data
-        if (hasHeader && std::getline(file, line)) {
-            columns = tokenise(line, delimiter);
+        if (has_header) {
+            columns = tokenise_csv(file, delimiter);
+            expected_columns = columns.size();
+
+            if (expected_columns == 0) {
+                throw std::runtime_error("CSV header is empty");
+            }
         }
-        // Populating the matrix of data from the CSV
-        while (std::getline(file, line)) {
-            data.push_back(tokenise(line, delimiter));
+
+        while (file.peek() != EOF) {
+            auto row = tokenise_csv(file, delimiter);
+
+            if (row.size() == 1 && row[0].empty()) {
+                continue;
+            }
+
+            if (!has_header && expected_columns == 0) {
+                expected_columns = row.size();
+            }
+
+            if (row.size() != expected_columns) {
+                throw std::runtime_error(
+                    "Malformed CSV row: expected " +
+                    std::to_string(expected_columns) +
+                    " columns, got " +
+                    std::to_string(row.size())
+                );
+            }
+
+            data.push_back(std::move(row));
         }
 
         return CSVParser(columns, data);
     }
+
 
     // Constructor initializing columns and data
     CSVParser(const std::vector<std::string>& cols, const std::vector<std::vector<std::string>>& data) 
@@ -56,16 +83,92 @@ public:
 
     // Generic tokenizing method
     // Returns a vector of strings that should be casted later if necessary
-    static std::vector<std::string> tokenise(const std::string& line, char delimiter) {
-        std::vector<std::string> tokens;
-        std::istringstream stream(line);
-        std::string token;
+    static std::vector<std::string> tokenise(
+        std::istream& input,
+        char delimiter = ','
+    ) {
+        std::vector<std::string> row;
+        std::string field;
+        char c;
 
-        while (std::getline(stream, token, delimiter)) {
-            tokens.push_back(token);
+        enum class State {
+            StartField,
+            InField,
+            InQuotedField,
+            QuoteInQuoted
+        };
+
+        State state = State::StartField;
+
+        while (input.get(c)) {
+            switch (state) {
+
+            case State::StartField:
+                if (c == delimiter) {
+                    row.emplace_back("");
+                } else if (c == '"') {
+                    state = State::InQuotedField;
+                } else if (c == '\n') {
+                    row.emplace_back("");
+                    return row;
+                } else if (c == '\r') {
+                    continue;
+                } else {
+                    field += c;
+                    state = State::InField;
+                }
+                break;
+
+            case State::InField:
+                if (c == delimiter) {
+                    row.push_back(std::move(field));
+                    field.clear();
+                    state = State::StartField;
+                } else if (c == '\n') {
+                    row.push_back(std::move(field));
+                    return row;
+                } else if (c == '\r') {
+                    continue;
+                } else {
+                    field += c;
+                }
+                break;
+
+            case State::InQuotedField:
+                if (c == '"') {
+                    state = State::QuoteInQuoted;
+                } else {
+                    field += c;
+                }
+                break;
+
+            case State::QuoteInQuoted:
+                if (c == '"') {
+                    field += '"';
+                    state = State::InQuotedField;
+                } else if (c == delimiter) {
+                    row.push_back(std::move(field));
+                    field.clear();
+                    state = State::StartField;
+                } else if (c == '\n') {
+                    row.push_back(std::move(field));
+                    return row;
+                } else if (c == '\r') {
+                    continue;
+                } else {
+                    throw std::runtime_error("Malformed CSV: unexpected character after quote");
+                }
+                break;
+            }
         }
 
-        return tokens;
+        // End-of-file handling
+        if (state == State::InQuotedField) {
+            throw std::runtime_error("Malformed CSV: unterminated quoted field");
+        }
+
+        row.push_back(std::move(field));
+        return row;
     }
 
     // Retrieve a column as a vector of strings
@@ -103,9 +206,31 @@ public:
         return CSVParser(columns, filtered_data);
     }
 
+    const std::vector<std::string>& get_columns() const noexcept {
+        return columns;
+    }
+
+    const std::vector<std::vector<std::string>>& rows() const noexcept {
+        return data;
+    }
+
+    size_t row_count() const noexcept {
+        return data.size();
+    }
+
+    size_t column_count() const noexcept {
+        return columns.size();
+    }
+
     // Apply a function to transform a column
-    void apply(const std::string& col_name, const std::function<void(std::string&)>& func) {
-        size_t index = column_indices.at(col_name);
+    void apply(const std::string& col_name,
+           const std::function<void(std::string&)>& func) {
+        auto it = column_indices.find(col_name);
+        if (it == column_indices.end()) {
+            throw std::runtime_error("Column not found: " + col_name);
+        }
+
+        size_t index = it->second;
         for (auto& row : data) {
             func(row[index]);
         }
@@ -117,7 +242,9 @@ public:
         std::vector<std::string> col = get_column(col_name);
         std::vector<double> values = to_double_vector(col);
         double sum = std::accumulate(values.begin(), values.end(), 0.0);
-        return sum / values.size();
+
+        if (values.empty())
+            throw std::runtime_error("Cannot compute mean of empty column");
     }
 
     // Calculate the sum of a numeric column
@@ -164,37 +291,54 @@ public:
             if (row.size() != sizeof...(Args)) {
                 throw std::runtime_error("Mismatched number of tokens for the expected constructor arguments.");
             }
-            objects.emplace_back(createObjectHelper<T, Args...>(row, std::index_sequence_for<Args...>{}));
+            objects.emplace_back(from_row<T, Args...>(row, std::index_sequence_for<Args...>{}));
         }
         return objects;
     }
 
     // Creates an object of type T by unpacking the tokens into the constructor
     template <typename T, typename... Args>
-    static T createObject(const std::vector<std::string>& tokens) {
+    static T create_object(const std::vector<std::string>& tokens) {
         if (tokens.size() != sizeof...(Args)) {
             throw std::runtime_error("Mismatched number of tokens for the expected constructor arguments.");
         }
-        return createObjectHelper<T, Args...>(tokens, std::index_sequence_for<Args...>{});
-    }
-
-    // Helper function to unpack the tokens and create the object
-    template <typename T, typename... Args, std::size_t... I>
-    static T createObjectHelper(const std::vector<std::string>& tokens, std::index_sequence<I...>) {
-        return T{convert<typename std::tuple_element<I, std::tuple<Args...>>::type>(tokens[I])...};
+        return from_row<T, Args...>(tokens, std::index_sequence_for<Args...>{});
     }
 
     // Converts a string token to the desired type
     template <typename T>
-    static T convert(const std::string& token) {
-        if constexpr (std::is_integral<T>::value) {
-            return std::stoi(token);
-        } else if constexpr (std::is_floating_point<T>::value) {
-            return std::stod(token);
-        } else {
-            return token;
-        }
+    static T convert(const std::string&) = delete;
+
+    template <>
+    inline int convert<int>(const std::string& s) {
+        return std::stoi(s);
     }
+
+    template <>
+    inline long convert<long>(const std::string& s) {
+        return std::stol(s);
+    }
+
+    template <>
+    inline long long convert<long long>(const std::string& s) {
+        return std::stoll(s);
+    }
+
+    template <>
+    inline double convert<double>(const std::string& s) {
+        return std::stod(s);
+    }
+
+    template <>
+    inline float convert<float>(const std::string& s) {
+        return std::stof(s);
+    }
+
+    template <>
+    inline std::string convert<std::string>(const std::string& s) {
+        return s;
+    }
+
 
 private:
     // Casting to convert a vector of strings to a vector of doubles
@@ -204,6 +348,12 @@ private:
             return std::stod(val);
         });
         return result;
+    }
+
+    // Helper function to unpack the tokens and create the object
+    template <typename T, typename... Args, std::size_t... I>
+    static T from_row(const std::vector<std::string>& tokens, std::index_sequence<I...>) {
+        return T{convert<typename std::tuple_element<I, std::tuple<Args...>>::type>(tokens[I])...};
     }
 };
 
