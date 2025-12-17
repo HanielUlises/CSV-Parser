@@ -38,7 +38,7 @@ Include the header and add the include path:
 
 ## Basic Usage
 
-\`\`\`cpp
+```cpp
 auto csv = CSVParser::read_csv("data.csv");
 
 csv.print();
@@ -48,20 +48,20 @@ auto filtered = csv.filter([](const auto& row) {
 });
 
 double avg = csv.mean("price");
-\`\`\`
+```
 
 ---
 
 ## Object Construction
 
-\`\`\`cpp
+```cpp
 struct Person {
     std::string name;
     int age;
 };
 
 auto people = csv.create_objects<Person, std::string, int>();
-\`\`\`
+```
 
 Rows are mapped positionally to constructor arguments.
 
