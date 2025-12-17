@@ -30,9 +30,9 @@ CSVParser provides a strict, row-oriented CSV parser with optional header suppor
 
 Include the header and add the include path:
 
-\`\`\`cpp
+```cpp
 #include <csv/CSVParser.h>
-\`\`\`
+```
 
 ---
 
